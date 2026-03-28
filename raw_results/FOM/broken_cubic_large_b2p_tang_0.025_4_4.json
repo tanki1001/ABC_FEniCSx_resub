@@ -1,0 +1,19 @@
+{
+    "geometry1": "broken_cubic",
+    "geometry2": "large",
+    "ope": "b2p_tang",
+    "lc": 0.025,
+    "dimP": 4,
+    "dimQ": 4,
+    "frequencies": [
+        2000
+    ],
+    "Z_center": {
+        "real": [
+            0.9776151699263864
+        ],
+        "imag": [
+            0.14086524798153605
+        ]
+    }
+}

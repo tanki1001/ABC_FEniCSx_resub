@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Mesh files (large binaries)
+*.msh
+*.nas
+*.stl
+*.ply
+
+# CAD files
+*.step
+
+# FEniCSx output
+*.h5
+*.xdmf
+
+# COMSOL files
+*.mph
+*.mphbin
+*.mphtxt
+
+# Generated images / plots
+*.png
+*.pdf
+
+# Export dirs (generated)
+export_geoCOMSOL/
