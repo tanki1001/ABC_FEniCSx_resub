@@ -27,7 +27,7 @@ LC_MAP  = {
     'curvedcubic':      1.5e-2,
     'new_broken_cubic': 1.5e-2,
 }
-GEO2 = 'large'
+GEO2 = 'small'
 
 
 GEOMETRY_LABELS = {

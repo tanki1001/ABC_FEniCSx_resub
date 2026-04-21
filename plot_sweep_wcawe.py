@@ -233,7 +233,7 @@ def plot_cpu_time(geometries, N_range=range(1, 101)):
 # ─────────────────────────────────────────────────────────────────────────────
 #  PLOT 5: CPU time breakdown (stacked bar: derivatives, building, splitting, solving)
 # ─────────────────────────────────────────────────────────────────────────────
-def plot_cpu_breakdown(geometries, N_range=range(1, 101)):
+def plot_cpu_breakdownV2(geometries, N_range=range(1, 101)):
     n_geo = len(geometries)
     fig, axes = plt.subplots(1, n_geo, figsize=(6 * n_geo, 5), squeeze=False)
 
@@ -277,6 +277,80 @@ def plot_cpu_breakdown(geometries, N_range=range(1, 101)):
     fig.tight_layout()
     return fig
 
+def plot_cpu_breakdown(geometries, N_range=range(1, 101)):
+    """
+    CPU breakdown using stacked area plot (JCP publication style).
+    """
+
+    n_geo = len(geometries)
+
+    # --- Aspect ratio: wide and compact (paper column-friendly) ---
+    fig, axes = plt.subplots(1, n_geo, figsize=(5.5 * n_geo, 3.2), squeeze=False)
+
+    for i, geo in enumerate(geometries):
+        ax = axes[0, i]
+        lc = LC_MAP[geo]
+
+        Ns = []
+        t_deriv, t_build, t_split, t_solve = [], [], [], []
+
+        for N in N_range:
+            rom_data = load_rom(geo, lc, N)
+            if rom_data is None:
+                continue
+
+            cpu = rom_data['CPU_time']
+            Ns.append(N)
+            t_deriv.append(cpu['derivatives'])
+            t_build.append(cpu['buildingVn'])
+            t_split.append(cpu['spliting_Vn'])
+            t_solve.append(cpu['solvingMOR'])
+
+        Ns = np.array(Ns)
+        t_deriv = np.array(t_deriv)
+        t_build = np.array(t_build)
+        t_split = np.array(t_split)
+        t_solve = np.array(t_solve)
+
+        # --- Stacked area (clean, no edges) ---
+        ax.stackplot(
+            Ns,
+            t_deriv,
+            t_build,
+            t_split,
+            t_solve,
+            labels=[
+                r'Derivatives',
+                r'Build $V_n$',
+                r'Split $V_n$',
+                r'Solve ROM'
+            ],
+            alpha=0.9,
+            linewidth=0.0
+        )
+
+        # --- Titles & labels (LaTeX style) ---
+        ax.set_title(rf'{GEOMETRY_LABELS[geo]}')
+        ax.set_xlabel(r'Number of WCAWE vectors $N$')
+        ax.set_ylabel(r'CPU time [s]')
+
+        # --- Limits ---
+        ax.set_xlim(Ns.min(), Ns.max())
+
+        # --- Light horizontal guide only ---
+        ax.yaxis.grid(True, linestyle=':', linewidth=0.6, alpha=0.6)
+
+        # --- Clean spines (JCP style) ---
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        # --- Legend only once ---
+        if i == 0:
+            ax.legend(loc='upper left')
+
+    # --- Tight layout with small padding ---
+    fig.tight_layout(pad=1.0)
+    return fig
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  CLI

@@ -18,34 +18,45 @@ from operators_POO import (Mesh, Loading, Simulation,
 
 # ── Configuration ──────────────────────────────────────────────────────────
 str_ope   = "b2p_tang_ipp"
-dimP      = 4
-dimQ      = 4
+dimP      = 2
+dimQ      = 2
 f0        = 1000
 BSP       = True
 freqvec   = np.arange(80, 2001, 20)
 N_values  = list(range(1, 101))   # N from 1 to 100
+#N_values = [5, 10, 25, 40]
 
 # Geometry configs: (geometry_name, geometry2, geo_function, side_box, lc)
+GEO2 = 'small'  # 'small' or 'large'
+if GEO2 == 'small':
+    side_box = 0.11
+    lc       = 1.5e-2
+elif GEO2 == 'large':
+    side_box = 0.40
+    lc       = 2e-2
+else :
+    raise NotImplementedError("Enter your own side_box and mesh size in the code")
+
 GEOMETRY_CONFIGS = {
     'spherical': {
-        'geometry2': 'large',
+        'geometry2': GEO2,
         'geo_fct':   spherical_domain,
-        'side_box':  0.4,
-        'lc':        1.5e-2,
+        'side_box':  side_box,
+        'lc':        lc,
         'radius':    0.1,
     },
     'curvedcubic': {
-        'geometry2': 'large',
+        'geometry2': GEO2,
         'geo_fct':   curved_cubic_domain_CAD,
-        'side_box':  0.4,
-        'lc':        1.5e-2,
+        'side_box':  side_box,
+        'lc':        lc,
         'radius':    0.1,
     },
     'new_broken_cubic': {
-        'geometry2': 'large',
+        'geometry2': GEO2,
         'geo_fct':   new_broken_cubic_domain_CAD,
-        'side_box':  0.4,
-        'lc':        1.5e-2,
+        'side_box':  side_box,
+        'lc':        lc,
         'radius':    0.1,
     },
 }

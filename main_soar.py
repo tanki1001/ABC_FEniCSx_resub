@@ -83,7 +83,7 @@ def fct_main_soar(
 
 
     t1   = time()
-    Vn, CPUbuildingVn, CPUderivatives, CPUspliting_Vn = soar(simu=simu, f0=f0, n=N)
+    Vn, CPUbuildingVn, CPUderivatives, CPUspliting_Vn = soar(simu=simu, f0=f0, n=N, BSP=BSP)
     t2   = time()
     print(f'SOAR CPU time  : {t2 - t1}')
 
@@ -131,7 +131,7 @@ def fct_main_soar(
 str_ope = "b2p_tang_ipp"
 dimP = 2
 dimQ = dimP
-N = 20
+N = 5
 f0 = 1000
 freqvec = np.arange(80, 2001, 20)
 
@@ -148,7 +148,7 @@ if __name__ == "__main__":
         freqvec   = freqvec,
         N    = N,
         f0 = f0,
-        BSP           = True,
+        BSP           = False,
         FOM_from_data = True,
         ax        = ax,
     )

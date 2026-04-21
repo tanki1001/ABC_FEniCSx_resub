@@ -19,7 +19,7 @@ from operators_POO import (Mesh, Loading, Simulation,
                            B2p_tang_ipp, B2p_tang, save_json)
 
 # ── Configuration ──────────────────────────────────────────────────────────
-STR_OPE   = "b2p_tang"
+STR_OPE   = "b2p_tang_ipp"
 OPE_MAP = {
     'b2p_tang_ipp': B2p_tang_ipp,
     'b2p_tang':     B2p_tang,

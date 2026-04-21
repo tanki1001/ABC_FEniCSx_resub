@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from math import factorial
 import scipy.linalg as la
+import scipy.sparse as sp
+from scipy.sparse.linalg import spsolve
 from scipy import special
 import json
 
@@ -594,6 +596,7 @@ class Simulation:
 
         # Project matrices and F_static
         list_Dr, Fr_static = listDr_matrices(list_D, F_static, Vn)
+        print("Projection of matrices and loading done")
 
         X_sol = []
         t1 = time()
@@ -1132,6 +1135,8 @@ class B2p_tang_ipp(Operator):
         submesh_info = [submesh, entity_maps_mesh]
         curv_q = move_to_facet_quadrature(kappa, mesh, submesh_info)
 
+        
+
         #curv_q = Function(Q)
         #curv_q.interpolate(curv_q1)
 
@@ -1228,7 +1233,7 @@ class B2p_tang_ipp(Operator):
         K_surf.destroy()
         I_PQ.destroy()
         G1_mat.destroy()
-        
+
 
         D2_00 = form(inner(Constant(mesh, PETSc.ScalarType(0))*p, v) * dx)
         D2_01 = form(inner(Constant(submesh, PETSc.ScalarType(0))*q, v) * ds(3), entity_maps=entity_maps_mesh)
@@ -1243,9 +1248,30 @@ class B2p_tang_ipp(Operator):
             [G2, D3_11]]
         D3 = petsc.assemble_matrix(D3)
         D3.assemble()
-    
+
+        # --- Expose all 8 sub-blocks for the complex-modal MOR ---
+        # Stored once at construction so the online stage never re-extracts
+        # them. Block layout:
+        #     D1 = [[K, C], [G12, E1]]
+        #     D2 = [[0, 0], [G3, E2]]
+        #     D3 = [[M, 0], [G4, 0]]
+        # NB: self.C is the assembled (0,1) block of D1; the sign of
+        # `c = inner(-q, v) * ds(3)` is already absorbed into the entries.
+        p_is = PETSc.IS().createGeneral(list(range(nP_local)))
+        q_is = PETSc.IS().createGeneral(list(range(nP_local, nP_local + nQ_local)))
+        self.K   = D1.createSubMatrix(p_is, p_is)
+        self.C   = D1.createSubMatrix(p_is, q_is)
+        self.G12 = D1.createSubMatrix(q_is, p_is)
+        self.E1  = D1.createSubMatrix(q_is, q_is)
+        self.G3  = D2.createSubMatrix(q_is, p_is)
+        self.E2  = D2.createSubMatrix(q_is, q_is)
+        self.M   = D3.createSubMatrix(p_is, p_is)
+        self.G4  = D3.createSubMatrix(q_is, p_is)
+        p_is.destroy()
+        q_is.destroy()
+
         list_D        = np.array([D1, D2, D3])
-        
+
         return list_D
     
     def import_matrix(self, freq):
@@ -1490,6 +1516,16 @@ def P_Q_w(Q, alpha, beta, omega):
     P_q_w.assemble()
     return P_q_w
 
+def petsc_aij_to_csr(A):
+    """Convert a PETSc seqaij matrix to a scipy.sparse.csr_matrix.
+
+    Used by the complex-modal online stage to form the block-wise projection
+    products (Phi_p/Phi_q vs K, M, C, G12, G3, G4, E1, E2) cheaply.
+    """
+    indptr, indices, data = A.getValuesCSR()
+    return sp.csr_matrix((data, indices, indptr), shape=A.getSize())
+
+
 def listDr_matrices(list_D, F, Vn) :
     t1 = time()
     list_Dr = []
@@ -1503,11 +1539,13 @@ def listDr_matrices(list_D, F, Vn) :
 
     for Di in list_D:
         Dir_m = Vn_T.matMult(Di) 
+        print(f'Dir_m size : {Dir_m.getSize()}')
         Dir = Dir_m.matMult(Vn)
+        
         Dir.assemble()
         list_Dr.append(Dir)
         Dir_m.destroy()
-
+    
     Fr = list_Dr[0].createVecLeft()
     Vn_T.mult(F, Fr) # Fn = Vn_T * F
     #plot_heat_map(list_Dr[0])
@@ -1520,7 +1558,7 @@ def listDr_matrices(list_D, F, Vn) :
 
 ### For SOAR ###
 
-def soar(simu : Simulation, f0 : float, n : int):
+def soar(simu : Simulation, f0 : float, n : int, BSP: bool = False):
     """
     SOAR procedure (Algorithm 4 from Bai & Su, SIAM J. Matrix Anal. Appl., 2005)
     adapted for model order reduction of the parametric system:
@@ -1548,12 +1586,17 @@ def soar(simu : Simulation, f0 : float, n : int):
         simu : Simulation object (provides operator.list_D and loading.F)
         f0   : Interpolation frequency in Hz
         n    : Number of basis vectors to generate
+        BSP  : If True, apply Block-Structure-Preserving splitting (Eq. 22
+               from Mariotti et al., JCP 2025). Doubles the reduced basis
+               size to 2n but preserves block structure of coupled equations.
 
     Returns:
-        Vn            : PETSc.Mat (N_dofs x n, seqdense) orthonormal basis matrix
+        Vn            : PETSc.Mat, seqdense — SOAR basis
+                        shape (N_dofs x n)      if BSP = False
+                        shape (N_dofs x 2n)     if BSP = True
         CPU_basis     : float — time to build the basis (seconds)
         CPU_derivs    : float — time to compute shifted matrices (seconds)
-        CPU_split     : float — always 0 (no BSP in SOAR), for interface consistency
+        CPU_split     : float — time for BSP splitting (0 if BSP = False)
     """
     print("start of SOAR procedure...")
 
@@ -1697,7 +1740,189 @@ def soar(simu : Simulation, f0 : float, n : int):
     if loading.freq_dep_order > 0:
         F.destroy()
 
-    return Vn, CPU_basis, CPU_derivs, 0.0
+    # --- BSP splitting (optional) ---
+    if BSP:
+        Vn, CPU_split = split_basis_BSP(simu, Vn)
+    else:
+        CPU_split = 0.0
+
+    return Vn, CPU_basis, CPU_derivs, CPU_split
+
+
+### For complex modal MOR (QEP) ###
+
+def complex_modal_basis(simu: 'Simulation', f0: float, N_modes: int,
+                         BSP: bool = True):
+    """
+    Build the complex-modal basis from the Quadratic Eigenvalue Problem
+
+        [D1 + lambda D2 + lambda^2 D3] phi = 0,      lambda = jk
+
+    associated with the frequency-independent BGT block system. Unlike the
+    real-valued interior GHEP K phi = omega^2 M phi, this QEP is posed on
+    the *full* (n_p + n_q)-dimensional system so that the radiation damping
+    carried by jk D2 and the block coupling C, G12, G3, G4 are captured
+    exactly.
+
+    SLEPc's PEP module (polynomial eigenvalue problem) handles the
+    linearization internally. The target is set to lambda_0 = j k0 and
+    shift-invert is applied so the N_modes eigenvalues closest to the
+    excitation band are returned.
+
+    The returned basis Vn can be used directly with the generic online
+    stage Simulation.moment_matching_MOR(Vn, freqvec).
+
+    Args:
+        simu    : Simulation object (operator must expose list_D)
+        f0      : expansion frequency in Hz (sets the SLEPc shift target)
+        N_modes : number of complex eigenpairs requested
+        BSP     : If True, apply Block-Structure-Preserving splitting
+                  V_tilde = [[Phi_p, 0], [0, Phi_q]] (Eq. 22 of Mariotti
+                  et al., JCP 2025). Doubles the reduced basis size to
+                  2*N_keep but preserves the block structure of the
+                  coupled equations. If False, the raw complex modes are
+                  stacked column-wise and the reduced size stays at N_keep.
+
+    Returns:
+        Vn        : PETSc.Mat, seqdense — complex-modal basis
+                    shape (n_total x N_keep)     if BSP = False
+                    shape (n_total x 2 N_keep)   if BSP = True
+        CPU_eig   : float — QEP solve time (s)
+        CPU_asm   : float — raw basis assembly time (s)
+        CPU_split : float — BSP splitting time (s), 0 if BSP = False
+    """
+    print("start of complex modal basis construction (QEP)...")
+
+    ope = simu.operator
+    if not hasattr(ope, "list_D") or ope.list_D is None:
+        raise AttributeError(
+            "complex_modal_basis: operator must expose self.list_D = [D1, D2, D3]."
+        )
+    if not hasattr(ope, "E1"):
+        raise AttributeError(
+            "complex_modal_basis: need ope.E1 to know n_q (split full modes)."
+        )
+
+    D1, D2, D3 = ope.list_D[0], ope.list_D[1], ope.list_D[2]
+    n_total = D1.getSize()[0]
+    n_q = ope.E1.getSize()[0]
+    n_p = n_total - n_q
+
+    k0 = 2 * np.pi * f0 / c0
+    target = 1j * k0
+    print(f"  [QEP] shift target lambda0 = j k0 = {target:.4e}  "
+          f"(k0 = {k0:.4f}, f0 = {f0} Hz, n_total = {n_total})")
+
+    # --- SLEPc polynomial eigensolver ---
+    t_eig_start = time()
+
+    pep = SLEPc.PEP().create()
+    pep.setOperators([D1, D2, D3])
+    pep.setProblemType(SLEPc.PEP.ProblemType.GENERAL)
+    pep.setDimensions(nev=N_modes)
+    #pep.setScale(SLEPc.PEP.Scale.BOTH)  # or Scale.SCALAR
+    pep.setTolerances(tol=1e-10, max_it=5000)
+    pep.setWhichEigenpairs(SLEPc.PEP.Which.TARGET_MAGNITUDE)
+    pep.setTarget(target)
+
+    st = pep.getST()
+    st.setType(SLEPc.ST.Type.SINVERT)
+    st.setShift(target)
+    ksp = st.getKSP()
+    ksp.setType("preonly")
+    pc = ksp.getPC()
+    pc.setType("lu")
+    pc.setFactorSolverType("mumps")
+
+    pep.setFromOptions()
+    pep.solve()
+
+    nconv = pep.getConverged()
+    print(f"  [QEP] SLEPc: {nconv} eigenpairs converged (requested {N_modes})")
+    N_keep = max(N_modes, nconv)
+    if N_keep == 0:
+        pep.destroy()
+        raise RuntimeError("complex_modal_basis: SLEPc converged 0 eigenpairs.")
+    if N_keep < N_modes:
+        print(f"  [QEP] WARNING: keeping only {N_keep} converged modes")
+
+    eig_lambda = np.zeros(N_keep, dtype=np.complex128)
+    for i in range(N_keep):
+        eig_lambda[i] = pep.getEigenpair(i)
+        #print(f'pep.computeError({i}) : {pep.computeError(i)}')
+    # lambda = jk => k = -j*lambda => f = |k| c0 / (2 pi)
+    k_vec   = -1j * eig_lambda
+    f_modes = np.abs(k_vec) * c0 / (2 * np.pi)
+    damping = np.real(eig_lambda)
+    print(f"  [QEP] eigenfrequencies (Hz): "
+          f"min={f_modes.min():.1f}, max={f_modes.max():.1f}, mean={f_modes.mean():.1f}")
+    print(f"  [QEP] Re(lambda) (damping): "
+          f"min={damping.min():.3e}, max={damping.max():.3e}")
+
+    CPU_eig = time() - t_eig_start
+    print(f"complex_modal_basis: QEP solved in {CPU_eig:.2f} s")
+
+    # --- Assemble raw basis Vn_raw (n_total x N_keep) ---
+    t_asm_start = time()
+
+    Vn_raw = PETSc.Mat().create()
+    Vn_raw.setSizes((n_total, N_keep))
+    Vn_raw.setType("seqdense")
+    Vn_raw.setFromOptions()
+    Vn_raw.setUp()
+    Vn_raw.zeroEntries()
+
+    total_rows = list(range(n_total))
+    phi_vec = D1.createVecRight()
+    for j in range(N_keep):
+        pep.getEigenpair(j, phi_vec)
+        Vn_raw.setValues(total_rows, j, phi_vec.getArray(),
+                         PETSc.InsertMode.INSERT_VALUES)
+    phi_vec.destroy()
+    Vn_raw.assemble()
+    pep.destroy()
+
+    CPU_asm = time() - t_asm_start
+    print(f"complex_modal_basis: Vn_raw ({n_total} x {N_keep}) "
+          f"assembled in {CPU_asm:.4f} s")
+
+    # --- BSP splitting (optional) ---
+    if BSP:
+        t_split_start = time()
+
+        Vn = PETSc.Mat().create()
+        Vn.setSizes((n_total, 2 * N_keep))
+        Vn.setType("seqdense")
+        Vn.setFromOptions()
+        Vn.setUp()
+        Vn.zeroEntries()
+
+        p_rows = list(range(n_p))
+        q_rows = list(range(n_p, n_total))
+        for j in range(N_keep):
+            col = Vn_raw.getColumnVector(j)
+            full = col.getArray()
+            Vn.setValues(p_rows, j,
+                         full[:n_p], PETSc.InsertMode.INSERT_VALUES)
+            Vn.setValues(q_rows, N_keep + j,
+                         full[n_p:n_total], PETSc.InsertMode.INSERT_VALUES)
+            col.destroy()
+        Vn.assemble()
+        Vn_raw.destroy()
+
+        CPU_split = time() - t_split_start
+        print(f"complex_modal_basis: BSP-expanded Vn ({n_total} x "
+              f"{2 * N_keep}) built in {CPU_split:.4f} s")
+        print(f"complex_modal_basis: reduced system size will be 2N = "
+              f"{2 * N_keep}")
+    else:
+        Vn = Vn_raw
+        CPU_split = 0.0
+        print(f"complex_modal_basis: reduced system size will be N = "
+              f"{N_keep} (BSP disabled)")
+
+    return Vn, CPU_eig, CPU_asm, CPU_split
+
 
 ### For WCAWE ###
 
